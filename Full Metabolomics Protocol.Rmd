@@ -1,0 +1,240 @@
+---
+title: "Full Metabolomics Analysis Protocol"
+author: "Abrar Al-Shaer"
+date: "October 21, 2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+This file shows an example metabolomics full analysis protocol (given validated metabolomics data).
+The example is using our lab's adipose tissue metabolomic data (from Nichole Reisdorph Lab). This was applied to the data for the manuscript by Pal et al. 2019 in the Shaikh Lab.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+Loading in pakcages
+```{r cars}
+rm(list=ls())
+library("FactoMineR")
+library(ggplot2)
+library("factoextra")
+library("corrplot")
+library(ggfortify)
+library(dplyr)
+library(gplots)
+library(ComplexHeatmap)
+library(reshape2)
+library(ggpubr)
+```
+
+Creating PCA Plots
+```{r}
+#for more detailed PCA code reference R script metabolites_PCA.R
+
+#read in the file
+#validated adipose data 10/15/19 - Con, HF, EPA
+metData <- t(read.csv("Adipose Re-extraction Annotated_subset_rawData_Con_HF_EPA.csv", header = TRUE, fill = TRUE, row.names = 2))[c(2:12,14:16),] #selecting from this file the samples (rows) I wish to include in the analysis
+
+#example of the file read in
+metData[1:14,1:3]
+```
+
+```{r}
+#convert the data frame to a numeric type
+#2-77 are the columns that contain metabolite data
+df2 <- data.frame(apply(metData[,2:77], 2, function(x) as.numeric(as.character(x))))
+#assign the rownames to the dataframe
+rownames(df2) <- rownames(metData)
+#assign the column names to the dataframe
+colnames(df2) <- colnames(metData)[2:77]
+```
+
+```{r}
+#Defining active variables for PCA
+metData.active <- df2[,c(1:length(df2))]
+#running PCA
+res.PCA <- PCA(metData.active, ncp = 5, graph=FALSE) #ncp = # of principal components to store from the PCA algorithm
+```
+
+Visualize Scree Plot
+```{r}
+#Scree plot
+fviz_eig(res.PCA, addlabels = TRUE) 
+```
+
+Visualize metabolites that contribute to the dimensions in the PCA
+```{r}
+#provides a list of matrices containing all the results for the active variables 
+#(coordinates, correlation between variables and axes, squared cosine and contributions)
+var <- get_pca_var(res.PCA)
+#Visualize correlation between the variables (columns) and principal componenet (PC)
+#color by cos2 values: quality on the factor map
+#select.var = select variables with top 30 contribution scores 
+fviz_pca_var(res.PCA, col.var = "cos2", gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), repel = TRUE, select.var = list(name = NULL, cos2 = NULL, contrib = 30)) #repel avoids overlapping labels
+```
+
+Visualize the Final PCA Graph
+```{r}
+#assign the PCA graphical output to ind.p
+ind.p <- fviz_pca_ind(res.PCA, geom.ind = c("point", "text"), axes = c(1,2), labelsize = 6, pointshape = 20, pointsize = 5, repel = TRUE, select.ind = list(contrib = 50), col.ind = metData[,1], mean.point = FALSE, addEllipses = FALSE, legend.title = "Groups") 
+#for visualization purposes you can select individual samples (select.ind) that contribute to the PCA the most (top 50, contrib = 50). This does not change was the calculations of the PCA
+#axes = c(1,2) defines the principal components you want to visualize (i.e.PC1 & PC2)
+#col.ind = column you would like to color the groups by (I color them by column 1 of my metData dataframe)
+
+ggpubr::ggpar(ind.p, title = "PCA - Adipose Metabolites", xlab = "PC1 (59%)", ylab = "PC2 (17.8%)", legend.title = "Groups", legend.position = "top", ggtheme = theme_classic(), palette = "aaas")+
+theme(plot.title=element_text(size=26))+theme(plot.subtitle=element_text(size=20))+
+  theme(axis.title.y = element_text(size = 22))+theme(axis.title.x = element_text(size = 22))+
+  theme(legend.title=element_text(size=25))+theme(legend.text=element_text(size=18))+font("xy.text", size = 22)
+```
+
+Testing for Statistical Significance & Calculating Fold Change
+```{r}
+#reading in transposed validated adipose datwith only HF & EPA groups
+metData <- read.csv("Adipose Re-extraction Annotated_subset_rawData_HF_EPA_transpose.csv", header = TRUE, fill = TRUE, row.names = 1)[c(1:6,8:10),] #subset the samples (rows) you wish to include in the analysis (I'm excluding HF_105 because it's a clear outlier)
+
+#assing a variables to the column names of the dataframe that contain METABOLITE names only (not other identifiers)
+columns <- colnames(metData[,2:77])
+
+#example of the file read in
+metData[1:9,1:3] #only HF & EPA samples exist (i.e. 2 groups only) because we are also calculating fold change. So the dataframe must only contain 2 groups.
+```
+
+```{r}
+#running the for loop that is iterating through all the columns & running the proper test & calculating FC
+#make sure toreplace metData[1:5] with the rows for group 1 and metData[6:9] with the rows for group 2
+datalist = list()
+fold_change <- list()
+i = 1
+for(col in columns) #only loop through the column names specified above
+{
+  #print(col) #printing column name
+  formula = as.formula(paste(col, "~ Diet")) #creating the comparison formula with the column
+  
+  if(shapiro.test(metData[,col])$p.value > 0.05){ 
+    result = compare_means(formula,  data = metData, method = "t.test") #if data is normal
+    if (result[[4]] < 0.05) { 
+      datalist[[i]] = print(compare_means(formula,  data = metData, method = "t.test"))
+      
+      if(mean(metData[1:5,col]) > mean(metData[6:9,col])){ #if the mean of EPA is > than HF, then it's a (+)FC
+        fold_change[[i]] = mean(metData[1:5,col])/mean(metData[6:9,col]) #mean of EPA / mean of HF 
+      } else { fold_change[[i]] = (mean(metData[1:5,col])/mean(metData[6:9,col]))*-1 } #(-)FC -> EPA < than HF
+    }
+  } else { 
+    result = compare_means(formula,  data = metData, method = "wilcox.test") #if the data is not normal
+    if (result[[4]] < 0.05) { 
+      datalist[[i]] = print(compare_means(formula,  data = metData, method = "wilcox.test"))
+      
+      if(mean(metData[1:5,col]) > mean(metData[6:9,col])){ #if the mean of EPA is > than HF, then it's a (+)FC
+        fold_change[[i]] = mean(metData[1:5,col])/mean(metData[6:9,col]) #mean of EPA / mean of HF 
+      } else { fold_change[[i]] = (mean(metData[1:5,col])/mean(metData[6:9,col]))*-1 } #(-)FC -> EPA < than HF
+      
+    } 
+  }
+  i = i+1
+}
+
+big_data1 = do.call(rbind, datalist) #combines all previous dataframes from for loop
+big_data2 = data.frame(do.call(rbind, fold_change)) #contains fold change calculations
+colnames(big_data2) = "Fold Change EPA:HF" #assign column name
+big_data_final = dplyr::bind_cols(big_data1, big_data2) #combine all the dataframes together (stats & fold changes)
+#write.csv(big_data_final, "Validated_Adipose_metabolites_FoldChange+signif_HF_EPA_unadjust.csv")
+
+#adjust p-values
+big_data_final$BH.adjust <- p.adjust(big_data_final$p, method = "BH")
+#write.csv(big_data_final, "Validated_Adipose_metabolites_FoldChange+signif_HF_EPA_BH_adjust.csv")
+
+#visualize big_data_final dataframe to show final output
+big_data_final[1:5,1:10]
+```
+
+Generating Heatmaps
+```{r}
+#take the output file from the above code & add in a MetaboliteGroup column where you manually annotate the metabolite class of each metabolite (also add a Type column with an abbreviation of the class). Next take the fold change column & add in a Log2 FC column where you Log2 all the fold changes (for negative fold changes multiply the FC by -1 then calculate the Log2). 
+metabolites <- read.csv("Validated_Adipose_metabolites_FoldChange+signif_HF_EPA_BH_adjust.csv", header = TRUE, fill = TRUE) 
+#read in the transposed raw metabolomics data with any undesired samples removed (I removed HF_105 because it was an outlier)
+metData <- read.csv("Adipose Re-extraction Annotated_subset_rawData_HF_EPA_transpose_rmHF105.csv", header = TRUE, fill = TRUE, row.names = 1)
+```
+
+Selecting only significant metabolites
+```{r}
+#extract metabolite names from the file that contains significant metabolites
+compounds <- unique(as.character(metabolites$Metabolite))
+
+#selects all occurances/matches for that list of significant compound
+metData_select <- metData[,colnames(metData) %in% compounds] 
+#add the sampleID label from the rownames of the previous dataframe (metData)
+row.names(metData_select) <- rownames(metData) 
+
+#transpose the metData_select dataframe
+metData_select_t <- t(metData_select)
+
+#write to a CSV the list of significant metabolites & their abundance values (raw data)
+#write.csv(metData_select_t,"Validated_Adipose_metabolites_FoldChange+signif_HF_EPA_BH_adjust_metaboliteValues.csv")
+
+#view output of dataframe
+metData_select_t[1:6,1:9]
+```
+
+```{r}
+#Take the above dataframe that you just wrote into a CSV and sort the dataframe & add the metabolite Group names (same metabolite group names as the metabolites dataframe). Also, filter the dataframe by fold changes above 1.5 or below -1.5
+metabolites2 <- na.omit(read.csv("Validated_Adipose_metabolites_FoldChange+signif_HF_EPA_BH_adjust_metaboliteValues_1.5FC.csv", header = TRUE, fill = TRUE))
+nams = metabolites2[,1] #names of the metabolites
+#assign rownames to the dataframe based on metabolite names
+rownames(metabolites2) = make.names(nams, unique=TRUE) #unique = TRUE to avoid duplicate names error
+
+#view output of dataframe
+metabolites2[1:5,1:15]
+```
+
+Creating the heatmap w/annotations
+```{r}
+# Annotation data frame
+annot_df <- data.frame(Type = metabolites2$Type) #Log2FC = metabolites2$Log2FC (you can also add Log2FC annotation)
+#Define colors for each levels of qualitative variables
+#Define gradient color for continuous variables (FC)
+col = list(Type = c("TG" = "lawngreen", "DG" = "darkgreen", "Amino Acids" = "orangered", "Ceramide" = "maroon1", 
+                    "PE" = "yellow", "PA" = "blueviolet", "PC" = "goldenrod", "LysoPE" = "lemonchiffon4", 
+                    "Macrolide" = "wheat1", "PS" = "turquoise1", "Galactolipid" = "rosybrown1", "Catechol" = "lavender")) #Log2FC = circlize::colorRamp2(c(-5,34), c("lightblue", "purple"))
+# Create the heatmap annotation
+ha <- HeatmapAnnotation(annot_df, col = col)
+
+# Combine the heatmap and the annotation
+Heatmap(scale(t(metabolites2[,7:15])), name = "Scaled \nAbundance", top_annotation = ha, row_names_gp = gpar(fontsize = 15), column_names_gp = gpar(fontsize = 13), cluster_columns = TRUE, cluster_rows = TRUE)
+
+```
+
+Fold Change Plot
+```{r}
+#subsetted (1.5 FC cutoff) validated adipose data
+metData <- read.csv("Validated_Adipose_metabolites_FoldChange+signif_HF_EPA_BH_adjust_metaboliteValues_1.5FC.csv", header = TRUE, fill = TRUE)
+#filter metData by only n3 PUFA containing metabolites
+metData_sub <- metData[metData$n3PUFA_containing == "YES",]
+
+#FOLD CHANGE BAR GRAPH
+#color pallet
+colors = c("TG" = "green3", "DG" = "darkgreen", "PC" = "goldenrod")
+
+fc_plot <- ggbarplot(metData_sub, x = "Metabolite", y = "Log2FC",
+          fill = "Type",           # change fill color by Type
+          color = "white",            # Set bar border colors to white
+          palette = colors,            # jco journal color palett is also an option. see ?ggpar
+          sort.val = "none",          # If you want it sorted by FC then put (desc) to sort in descending order
+          sort.by.groups = FALSE,     # Don't sort inside each group 
+          x.text.angle = 90,          # Rotate vertically x axis texts
+          ylab = "Log2FC EPA:HF",
+          legend.title = "Type",
+          rotate = TRUE,             #if Rotate = FALSE it will be a horizontal graph
+          ggtheme = theme_minimal()
+)
+
+fc_plot + theme(axis.text.y = element_text(color = "black", size = 18),
+                axis.text.x = element_text(color = "black", size = 18),
+      axis.title.x = element_text(color = "black", face = "bold", size = 20),
+      axis.title.y = element_text(color = "black", size = 18)) + 
+  theme(legend.title = element_text(size=15, face="bold")) + theme(legend.text = element_text(size=15))
+```
+
